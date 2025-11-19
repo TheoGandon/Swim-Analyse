@@ -19,11 +19,7 @@
 <body>
 
 <h1>Évolution des séances de natation</h1>
-<p>
-  Importer un ou plusieurs fichiers CSV de type :
-  <code>SA-M1 N - 07-10-2025.csv</code>, <code>SA-M1 N - 13-10-2025.csv</code>, etc.<br>
-  Le script lit les intervalles et calcule une séance globale par fichier.
-</p>
+<p>Importer un ou plusieurs fichiers CSV générés par ta montre (avec intervalles). Le script calculera une séance globale par fichier.</p>
 
 <input type="file" id="fileInput" accept=".csv" multiple>
 <p id="status"></p>
@@ -38,282 +34,169 @@
 <div class="chart-block"><canvas id="chartSwolf"></canvas></div>
 
 <script>
-const fileInput = document.getElementById('fileInput');
-const statusEl = document.getElementById('status');
-const sessionsTable = document.getElementById('sessionsTable');
-
 let chartDistance, chartDuration, chartPace, chartHR, chartSwolf;
 
-fileInput.addEventListener('change', handleFiles);
+document.getElementById("fileInput").addEventListener("change", handleFiles);
 
 function handleFiles(e) {
-    const files = Array.from(e.target.files || []);
-    if (!files.length) return;
+  const files = [...e.target.files];
+  if (!files.length) return;
 
-    statusEl.textContent = "Lecture des fichiers...";
-    const sessions = [];
-    let processed = 0;
+  document.getElementById("status").textContent = "Lecture des fichiers...";
+  const sessions = [];
+  let processed = 0;
 
-    files.forEach(file => {
-        const reader = new FileReader();
-        reader.onload = ev => {
-            const text = ev.target.result;
-            const session = buildSessionFromIntervalsCSV(text, file.name);
-            if (session) {
-                sessions.push(session);
-            }
-            processed++;
-            if (processed === files.length) {
-                if (!sessions.length) {
-                    statusEl.textContent = "Aucune séance exploitable trouvée.";
-                    clearCharts();
-                    sessionsTable.innerHTML = "";
-                } else {
-                    sessions.sort((a, b) => a.dateObj - b.dateObj);
-                    statusEl.textContent = "Séances lues : " + sessions.length;
-                    renderTable(sessions);
-                    renderCharts(sessions);
-                }
-            }
-        };
-        reader.readAsText(file);
-    });
-}
-
-/**
- * Construit une séance globale à partir d'un CSV d'intervalles.
- * Attend des colonnes (exactement ces noms-là) :
- * - "Distance"
- * - "Durée"
- * - "Allure moyenne"
- * - "Fréquence cardiaque moyenne"
- * - "SWOLF moyen"
- */
-function buildSessionFromIntervalsCSV(text, filename) {
-    const lines = text.trim().split(/\r?\n/);
-    if (lines.length < 2) return null;
-
-    // Détection ; ou ,
-    const firstLine = lines[0];
-    const delimiter = firstLine.includes(';') ? ';' : ',';
-
-    const headers = firstLine.split(delimiter).map(h => h.trim());
-    const dataLines = lines.slice(1).filter(l => l.trim().length > 0);
-
-    const idxDistance = headers.indexOf("Distance");
-    const idxDuree = headers.indexOf("Durée");
-    const idxFC = headers.indexOf("Fréquence cardiaque moyenne");
-    const idxSwolf = headers.indexOf("SWOLF moyen");
-
-    if (idxDistance === -1 || idxDuree === -1) {
-        return null;
-    }
-
-    let totalDistM = 0;
-    let totalTimeSec = 0;
-    let hrTimeWeighted = 0;
-    let swolfSum = 0;
-    let swolfCount = 0;
-
-    dataLines.forEach(line => {
-        const cols = line.split(delimiter);
-
-        const get = (i) => (cols[i] || "").trim();
-
-        // Distance en mètres
-        if (idxDistance >= 0) {
-            let dStr = get(idxDistance).replace(',', '.');
-            let d = parseFloat(dStr);
-            if (!isNaN(d)) {
-                totalDistM += d;
-            }
-        }
-
-        // Durée -> secondes
-        let durSec = NaN;
-        if (idxDuree >= 0) {
-            const durStr = get(idxDuree);
-            durSec = parseDurationToSeconds(durStr);
-            if (!isNaN(durSec)) {
-                totalTimeSec += durSec;
-
-                // FC moyenne pondérée par le temps
-                if (idxFC >= 0) {
-                    let fcStr = get(idxFC).replace(',', '.');
-                    let fc = parseFloat(fcStr);
-                    if (!isNaN(fc)) {
-                        hrTimeWeighted += fc * durSec;
-                    }
-                }
-            }
-        }
-
-        // SWOLF moyen
-        if (idxSwolf >= 0) {
-            let sStr = get(idxSwolf).replace(',', '.');
-            let s = parseFloat(sStr);
-            if (!isNaN(s)) {
-                swolfSum += s;
-                swolfCount++;
-            }
-        }
-    });
-
-    if (totalDistM <= 0 || totalTimeSec <= 0) {
-        return null;
-    }
-
-    const paceSec100 = totalTimeSec / totalDistM * 100; // sec / 100 m
-    const hrAvg = hrTimeWeighted > 0 ? (hrTimeWeighted / totalTimeSec) : NaN;
-    const swolfAvg = swolfCount > 0 ? (swolfSum / swolfCount) : NaN;
-
-    const dateInfo = extractDateFromFilename(filename);
-    const dateObj = dateInfo ? dateInfo.dateObj : new Date();
-    const dateLabel = dateInfo ? dateInfo.label : filename;
-
-    return {
-        fileName: filename,
-        dateObj,
-        dateLabel,
-        distanceM: totalDistM,
-        durationMin: totalTimeSec / 60,
-        paceSec100,
-        hrAvg,
-        swolfAvg
+  files.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = evt => {
+      const text = evt.target.result;
+      const session = parseSwimIntervalsCSV(text, file.name);
+      if (session) sessions.push(session);
+      processed++;
+      if (processed === files.length) finalize(sessions);
     };
+    reader.readAsText(file);
+  });
 }
 
-/** Extrait la date JJ-MM-AAAA depuis le nom du fichier. */
-function extractDateFromFilename(name) {
-    const m = name.match(/(\d{2})-(\d{2})-(\d{4})/);
-    if (!m) return null;
-    const dd = m[1];
-    const mm = m[2];
-    const yyyy = m[3];
-    const dateObj = new Date(parseInt(yyyy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10));
-    const label = `${yyyy}-${mm}-${dd}`;
-    return { dateObj, label };
+function finalize(sessions) {
+  if (!sessions.length) {
+    document.getElementById("status").textContent = "Aucune séance exploitable.";
+    return;
+  }
+
+  sessions.sort((a, b) => a.dateObj - b.dateObj);
+  document.getElementById("status").textContent = "Séances lues : " + sessions.length;
+
+  renderTable(sessions);
+  renderCharts(sessions);
 }
 
-/** Convertit "m:ss", "mm:ss" ou "h:mm:ss" en secondes. */
-function parseDurationToSeconds(str) {
-    if (!str) return NaN;
-    const parts = str.split(':').map(p => p.replace(',', '.'));
-    const nums = parts.map(parseFloat);
-    if (nums.some(isNaN)) return NaN;
-    if (nums.length === 2) {
-        // m:ss
-        return nums[0] * 60 + nums[1];
-    } else if (nums.length === 3) {
-        // h:mm:ss
-        return nums[0] * 3600 + nums[1] * 60 + nums[2];
+function parseSwimIntervalsCSV(text, filename) {
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 2) return null;
+
+  const delimiter = lines[0].includes(";") ? ";" : ",";
+  const headers = lines[0].split(delimiter).map(h => h.trim());
+  const dataLines = lines.slice(1).filter(l => l.trim().length > 0);
+
+  const idxDistance = headers.indexOf("Distance");
+  const idxDuration = headers.indexOf("Durée");
+  const idxHR = headers.indexOf("Fréquence cardiaque moyenne");
+  const idxSwolf = headers.indexOf("SWOLF moyen");
+
+  if (idxDistance === -1 || idxDuration === -1) return null;
+
+  let totalDist = 0;
+  let totalTime = 0;
+  let hrWeighted = 0;
+  let swolfSum = 0;
+  let swolfCount = 0;
+
+  for (const line of dataLines) {
+    const cols = line.split(delimiter);
+
+    const dist = parseFloat(cols[idxDistance].replace(",", "."));
+    if (!isNaN(dist)) totalDist += dist;
+
+    const durSec = parseDuration(cols[idxDuration]);
+    if (!isNaN(durSec)) totalTime += durSec;
+
+    if (idxHR >= 0) {
+      const hr = parseFloat(cols[idxHR].replace(",", "."));
+      if (!isNaN(hr) && !isNaN(durSec)) hrWeighted += hr * durSec;
     }
-    return NaN;
+
+    if (idxSwolf >= 0) {
+      const s = parseFloat(cols[idxSwolf].replace(",", "."));
+      if (!isNaN(s)) {
+        swolfSum += s;
+        swolfCount++;
+      }
+    }
+  }
+
+  if (totalDist === 0 || totalTime === 0) return null;
+
+  const hrAvg = hrWeighted > 0 ? hrWeighted / totalTime : NaN;
+  const swolfAvg = swolfCount > 0 ? swolfSum / swolfCount : NaN;
+  const paceSec100 = (totalTime / totalDist) * 100;
+
+  const dateInfo = extractDate(filename);
+
+  return {
+    fileName: filename,
+    dateObj: dateInfo.dateObj,
+    dateLabel: dateInfo.label,
+    distKm: totalDist / 1000,
+    durationMin: totalTime / 60,
+    paceSec100,
+    hrAvg,
+    swolfAvg
+  };
 }
 
-/** Format mm:ss à partir de secondes. */
-function formatSecondsToMMSS(sec) {
-    if (isNaN(sec)) return "";
-    const m = Math.floor(sec / 60);
-    const s = Math.round(sec - m * 60);
-    const sStr = s < 10 ? "0" + s : "" + s;
-    return `${m}:${sStr}`;
+function extractDate(name) {
+  const m = name.match(/(\d{2})-(\d{2})-(\d{4})/);
+  const dd = m[1], mm = m[2], yyyy = m[3];
+  return {
+    dateObj: new Date(yyyy, mm - 1, dd),
+    label: `${yyyy}-${mm}-${dd}`
+  };
 }
 
-/** Affiche un tableau récapitulatif des séances. */
+function parseDuration(str) {
+  if (!str) return NaN;
+  const parts = str.split(":");
+  if (parts.length === 2) return parseFloat(parts[0]) * 60 + parseFloat(parts[1].replace(",", "."));
+  if (parts.length === 3) return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
+  return NaN;
+}
+
 function renderTable(sessions) {
-    let html = `
+  let html = `
+    <tr>
+      <th>Date</th><th>Fichier</th><th>Distance (km)</th>
+      <th>Durée (min)</th><th>Allure (sec/100m)</th>
+      <th>FC moy (bpm)</th><th>SWOLF moy</th>
+    </tr>
+  `;
+  sessions.forEach(s => {
+    html += `
       <tr>
-        <th>Date</th>
-        <th>Fichier</th>
-        <th>Distance (km)</th>
-        <th>Durée (min)</th>
-        <th>Allure (sec/100m)</th>
-        <th>Allure (mm:ss/100m)</th>
-        <th>FC moy (bpm)</th>
-        <th>SWOLF moy</th>
+        <td>${s.dateLabel}</td>
+        <td>${s.fileName}</td>
+        <td>${s.distKm.toFixed(2)}</td>
+        <td>${s.durationMin.toFixed(1)}</td>
+        <td>${s.paceSec100.toFixed(1)}</td>
+        <td>${isNaN(s.hrAvg) ? "" : s.hrAvg.toFixed(0)}</td>
+        <td>${isNaN(s.swolfAvg) ? "" : s.swolfAvg.toFixed(1)}</td>
       </tr>
     `;
-    sessions.forEach(s => {
-        html += `
-          <tr>
-            <td>${s.dateLabel}</td>
-            <td>${s.fileName}</td>
-            <td>${(s.distanceM / 1000).toFixed(2)}</td>
-            <td>${s.durationMin.toFixed(1)}</td>
-            <td>${s.paceSec100.toFixed(1)}</td>
-            <td>${formatSecondsToMMSS(s.paceSec100)}</td>
-            <td>${isNaN(s.hrAvg) ? "" : s.hrAvg.toFixed(0)}</td>
-            <td>${isNaN(s.swolfAvg) ? "" : s.swolfAvg.toFixed(1)}</td>
-          </tr>
-        `;
-    });
-    sessionsTable.innerHTML = html;
-}
-
-/** Crée ou recrée un graphique. */
-function createOrUpdateChart(existingChart, canvasId, label, labels, values, yLabel) {
-    const ctx = document.getElementById(canvasId).getContext('2d');
-    if (!values || values.length === 0 || values.every(v => isNaN(v))) {
-        if (existingChart) {
-            existingChart.destroy();
-        }
-        ctx.canvas.parentNode.style.display = "none";
-        return null;
-    }
-    ctx.canvas.parentNode.style.display = "block";
-
-    if (existingChart) {
-        existingChart.destroy();
-    }
-
-    return new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: labels,
-            datasets: [{
-                label: label,
-                data: values
-            }]
-        },
-        options: {
-            responsive: true,
-            scales: {
-                x: { title: { display: true, text: "Date" } },
-                y: { title: { display: true, text: yLabel } }
-            }
-        }
-    });
+  });
+  document.getElementById("sessionsTable").innerHTML = html;
 }
 
 function renderCharts(sessions) {
-    const labels = sessions.map(s => s.dateLabel);
-    const distKm = sessions.map(s => s.distanceM / 1000);
-    const durMin = sessions.map(s => s.durationMin);
-    const paceSec = sessions.map(s => s.paceSec100);
-    const hr = sessions.map(s => s.hrAvg);
-    const swolf = sessions.map(s => s.swolfAvg);
-
-    chartDistance = createOrUpdateChart(chartDistance, "chartDistance",
-        "Distance par séance (km)", labels, distKm, "Distance (km)");
-
-    chartDuration = createOrUpdateChart(chartDuration, "chartDuration",
-        "Durée par séance (min)", labels, durMin, "Durée (min)");
-
-    chartPace = createOrUpdateChart(chartPace, "chartPace",
-        "Allure moyenne (sec/100m)", labels, paceSec, "Allure (sec/100m)");
-
-    chartHR = createOrUpdateChart(chartHR, "chartHR",
-        "Fréquence cardiaque moyenne (bpm)", labels, hr, "FC moyenne (bpm)");
-
-    chartSwolf = createOrUpdateChart(chartSwolf, "chartSwolf",
-        "SWOLF moyen", labels, swolf, "SWOLF");
+  const labels = sessions.map(s => s.dateLabel);
+  chartDistance = drawChart(chartDistance, "chartDistance", "Distance (km)", labels, sessions.map(s => s.distKm));
+  chartDuration = drawChart(chartDuration, "chartDuration", "Durée (min)", labels, sessions.map(s => s.durationMin));
+  chartPace = drawChart(chartPace, "chartPace", "Allure (sec/100m)", labels, sessions.map(s => s.paceSec100));
+  chartHR = drawChart(chartHR, "chartHR", "FC moyenne (bpm)", labels, sessions.map(s => s.hrAvg));
+  chartSwolf = drawChart(chartSwolf, "chartSwolf", "SWOLF moyen", labels, sessions.map(s => s.swolfAvg));
 }
 
-function clearCharts() {
-    [chartDistance, chartDuration, chartPace, chartHR, chartSwolf].forEach(ch => {
-        if (ch) ch.destroy();
-    });
+function drawChart(instance, canvasId, label, labels, values) {
+  const ctx = document.getElementById(canvasId).getContext("2d");
+  if (instance) instance.destroy();
+  return new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{ label, data: values }]
+    },
+    options: { responsive: true }
+  });
 }
 </script>
 
